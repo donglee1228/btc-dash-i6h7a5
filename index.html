@@ -66,7 +66,7 @@
 <script>
 (function () {
   "use strict";
-  var BUILD = "20260613101640";              // 빌드 타임스탬프 (payload 캐시 무력화용)
+  var BUILD = "20260613102221";              // 빌드 타임스탬프 (payload 캐시 무력화용)
   var STORE_KEY = "dash_unlock_v1";     // sessionStorage/localStorage 키
   var ITER = 310000;
 
@@ -98,6 +98,39 @@
       });
   }
 
+  // 범용 한글 → 두벌식 QWERTY 변환 (한글 IME 상태로 친 비번 폴백용).
+  // 음절(가~힣)을 초/중/종성 분해해 두벌식 키로 환원. 한글이 전혀 없으면 null.
+  function 한글두벌식변환(s) {
+    var CHO = ["r","R","s","e","E","f","a","q","Q","t","T","d","w","W","c","z","x","v","g"];
+    var JUNG = ["k","o","i","O","j","p","u","P","h","hk","ho","hl","y","n","nj","np","nl","b","m","ml","l"];
+    var JONG = ["","r","R","rt","s","sw","sg","e","f","fr","fa","fq","ft","fx","fv","fg","a","q","qt","t","T","d","w","c","z","x","v","g"];
+    var JAMO = {
+      0x3131:"r",0x3132:"R",0x3133:"rt",0x3134:"s",0x3135:"sw",0x3136:"sg",0x3137:"e",
+      0x3138:"E",0x3139:"f",0x313A:"fr",0x313B:"fa",0x313C:"fq",0x313D:"ft",0x313E:"fx",
+      0x313F:"fv",0x3140:"fg",0x3141:"a",0x3142:"q",0x3143:"Q",0x3144:"qt",0x3145:"t",
+      0x3146:"T",0x3147:"d",0x3148:"w",0x3149:"W",0x314A:"c",0x314B:"z",0x314C:"x",
+      0x314D:"v",0x314E:"g",0x314F:"k",0x3150:"o",0x3151:"i",0x3152:"O",0x3153:"j",
+      0x3154:"p",0x3155:"u",0x3156:"P",0x3157:"h",0x3158:"hk",0x3159:"ho",0x315A:"hl",
+      0x315B:"y",0x315C:"n",0x315D:"nj",0x315E:"np",0x315F:"nl",0x3160:"b",0x3161:"m",
+      0x3162:"ml",0x3163:"l"
+    };
+    var out = "", 한글있음 = false;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if (c >= 0xAC00 && c <= 0xD7A3) {           // 완성형 음절
+        var n = c - 0xAC00;
+        out += CHO[Math.floor(n / 588)] + JUNG[Math.floor((n % 588) / 28)] + JONG[n % 28];
+        한글있음 = true;
+      } else if (JAMO[c]) {                        // 낱자(호환 자모)
+        out += JAMO[c];
+        한글있음 = true;
+      } else {
+        out += s.charAt(i);
+      }
+    }
+    return 한글있음 ? out : null;
+  }
+
   function 복호화(pw, p) {
     return crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveKey"])
       .then(function (base) {
@@ -124,13 +157,22 @@
     버튼.disabled = true;
     버튼.textContent = "복호화 중\u2026";
     payload요청()
-      .then(function (p) { return 복호화(pw, p); })
-      .then(function (html) {
+      .then(function (p) {
+        // 1차: 입력 그대로 → 실패 시 2차: 한글이면 두벌식 QWERTY 변환 폴백
+        return 복호화(pw, p)
+          .then(function (html) { return { html: html, 성공비번: pw }; })
+          .catch(function (err) {
+            var 변환 = 한글두벌식변환(pw);
+            if (!변환 || 변환 === pw) throw err;
+            return 복호화(변환, p).then(function (html) { return { html: html, 성공비번: 변환 }; });
+          });
+      })
+      .then(function (r) {
         try {
-          if (저장방식 === "local") localStorage.setItem(STORE_KEY, pw);
-          else sessionStorage.setItem(STORE_KEY, pw);
+          if (저장방식 === "local") localStorage.setItem(STORE_KEY, r.성공비번);
+          else sessionStorage.setItem(STORE_KEY, r.성공비번);
         } catch (e) {}
-        앱으로교체(html);
+        앱으로교체(r.html);
       })
       .catch(function (e) {
         버튼.disabled = false;
