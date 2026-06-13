@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="theme-color" content="#0e1117" />
+<title>잠금</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #0e1117; color: #e6e6e6;
+    font-family: -apple-system, "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; padding: 24px;
+  }
+  .잠금카드 {
+    width: 100%; max-width: 360px;
+    background: #161b22; border: 1px solid #232a33; border-radius: 16px;
+    padding: 28px 24px; box-shadow: 0 12px 40px rgba(0,0,0,.45);
+  }
+  .자물쇠 { font-size: 40px; text-align: center; display: block; margin-bottom: 8px; }
+  h1 { font-size: 18px; text-align: center; margin: 0 0 4px; font-weight: 700; }
+  .설명 { text-align: center; color: #8b949e; font-size: 13px; margin: 0 0 20px; }
+  label { display: block; font-size: 12px; color: #8b949e; margin: 12px 0 6px; }
+  input[type=password] {
+    width: 100%; padding: 12px 14px; font-size: 16px;
+    background: #0d1117; color: #e6e6e6;
+    border: 1px solid #2d333b; border-radius: 10px; outline: none;
+  }
+  input[type=password]:focus { border-color: #f7931a; }
+  .기억줄 { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 13px; color: #8b949e; }
+  .기억줄 input { accent-color: #f7931a; width: 16px; height: 16px; }
+  button {
+    width: 100%; margin-top: 18px; padding: 13px;
+    font-size: 16px; font-weight: 700;
+    background: #f7931a; color: #1a1300; border: none; border-radius: 10px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .6; cursor: default; }
+  .오류 { color: #ff6b6b; font-size: 13px; text-align: center; min-height: 18px; margin-top: 12px; }
+</style>
+</head>
+<body>
+  <main class="잠금카드" id="카드">
+    <span class="자물쇠">&#128274;</span>
+    <h1>잠금</h1>
+    <p class="설명">비밀번호를 입력하면 열립니다.</p>
+    <form id="폼" autocomplete="off">
+      <label for="비번">비밀번호</label>
+      <input id="비번" type="password" autocomplete="off" autofocus />
+      <div class="기억줄">
+        <input id="기억" type="checkbox" />
+        <label for="기억" style="margin:0">이 브라우저에서 기억</label>
+      </div>
+      <button id="버튼" type="submit">잠금 해제</button>
+    </form>
+    <p id="오류" class="오류" role="alert" aria-live="polite"></p>
+  </main>
+<script>
+(function () {
+  "use strict";
+  var BUILD = "20260613100956";              // 빌드 타임스탬프 (payload 캐시 무력화용)
+  var STORE_KEY = "dash_unlock_v1";     // sessionStorage/localStorage 키
+  var ITER = 310000;
+
+  var 폼 = document.getElementById("폼");
+  var 오류 = document.getElementById("오류");
+  var 버튼 = document.getElementById("버튼");
+  var 비번칸 = document.getElementById("비번");
+  var 기억 = document.getElementById("기억");
+  var payload캐시 = null;
+
+  function payload요청() {
+    if (payload캐시) return Promise.resolve(payload캐시);
+    return fetch("payload.enc?v=" + BUILD, { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("payload HTTP " + r.status);
+        return r.arrayBuffer();
+      })
+      .then(function (buf) {
+        var u8 = new Uint8Array(buf);
+        if (u8.length < 33 || String.fromCharCode(u8[0], u8[1], u8[2], u8[3]) !== "BTD1") {
+          throw new Error("payload 형식 오류");
+        }
+        payload캐시 = {
+          salt: u8.slice(4, 20),
+          iv: u8.slice(20, 32),
+          ct: u8.slice(32)
+        };
+        return payload캐시;
+      });
+  }
+
+  function 복호화(pw, p) {
+    return crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveKey"])
+      .then(function (base) {
+        return crypto.subtle.deriveKey(
+          { name: "PBKDF2", salt: p.salt, iterations: ITER, hash: "SHA-256" },
+          base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]
+        );
+      })
+      .then(function (key) {
+        return crypto.subtle.decrypt({ name: "AES-GCM", iv: p.iv }, key, p.ct);
+      })
+      .then(function (buf) {
+        return new TextDecoder().decode(buf);
+      });
+  }
+
+  function 앱으로교체(html) {
+    document.open();
+    document.write(html);
+    document.close();
+  }
+
+  function 잠금해제시도(pw, 저장방식, 자동) {
+    버튼.disabled = true;
+    버튼.textContent = "복호화 중\u2026";
+    payload요청()
+      .then(function (p) { return 복호화(pw, p); })
+      .then(function (html) {
+        try {
+          if (저장방식 === "local") localStorage.setItem(STORE_KEY, pw);
+          else sessionStorage.setItem(STORE_KEY, pw);
+        } catch (e) {}
+        앱으로교체(html);
+      })
+      .catch(function (e) {
+        버튼.disabled = false;
+        버튼.textContent = "잠금 해제";
+        if (자동) {
+          // 저장돼 있던 비번이 더 이상 안 맞음(비번 변경 등) → 조용히 지우고 입력 대기
+          try { sessionStorage.removeItem(STORE_KEY); localStorage.removeItem(STORE_KEY); } catch (x) {}
+          return;
+        }
+        if (String(e && e.message).indexOf("payload") === 0) {
+          오류.textContent = "데이터를 불러오지 못했습니다. 새로고침 해보세요.";
+        } else {
+          오류.textContent = "비밀번호가 올바르지 않습니다.";
+        }
+        비번칸.value = "";
+        비번칸.focus();
+      });
+  }
+
+  폼.addEventListener("submit", function (e) {
+    e.preventDefault();
+    오류.textContent = "";
+    var pw = 비번칸.value;
+    if (!pw) { 오류.textContent = "비밀번호를 입력하세요."; return; }
+    잠금해제시도(pw, 기억.checked ? "local" : "session", false);
+  });
+
+  // 자동 잠금해제: 같은 세션(새로고침) 또는 "기억" 체크해 둔 브라우저
+  var 저장 = null;
+  try { 저장 = sessionStorage.getItem(STORE_KEY) || localStorage.getItem(STORE_KEY); } catch (e) {}
+  if (저장) {
+    var 방식 = "session";
+    try { if (localStorage.getItem(STORE_KEY)) 방식 = "local"; } catch (e) {}
+    잠금해제시도(저장, 방식, true);
+  }
+})();
+</script>
+</body>
+</html>
